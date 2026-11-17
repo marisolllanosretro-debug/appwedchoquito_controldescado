@@ -27,7 +27,13 @@ class EnsureRoleHasPermission
         $accion = $parts[0];
         $modulo = $parts[1] ?? null;
 
-        if (! $modulo || ! in_array($modulo, Role::MODULOS, true)) {
+        if (! in_array($accion, ['ver', 'gestionar'], true)
+            || ! $modulo
+            || ! in_array($modulo, Role::MODULOS, true)) {
+            abort(403);
+        }
+
+        if ($user->esAdministrador()) {
             return $next($request);
         }
 

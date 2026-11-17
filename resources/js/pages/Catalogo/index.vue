@@ -1,357 +1,896 @@
 <script setup lang="ts">
-import { Head } from '@inertiajs/vue3';
-import { ref, computed } from 'vue';
+import { Head, useForm, usePage } from '@inertiajs/vue3';
+import { computed, ref } from 'vue';
+import InputError from '@/components/InputError.vue';
+import { Button } from '@/components/ui/button';
+import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from '@/components/ui/dialog';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { usePermissions } from '@/composables/usePermissions';
+import { precio as actualizarPrecio } from '@/routes/catalogo/productos';
+import { store as registrarPedido } from '@/routes/pedidos';
+import { store as registrarProducto } from '@/routes/productos';
 
 interface Producto {
     id: number;
     nombre: string;
     categoria: string;
     descripcion: string | null;
-    precio_compra: number;
-    precio_venta: number;
+    precio_venta: number | string;
     stock: number;
     stock_minimo: number;
     unidad_medida: string;
-    stock_bajo: boolean;
-    created_at: string;
 }
 
-interface CategoriaItem {
+interface Categoria {
     id: number;
     nombre: string;
     icono: string | null;
 }
-
-interface Props {
-    productos: Producto[];
-    categorias: CategoriaItem[];
+interface ItemCarrito {
+    productoId: number;
+    cantidad: number;
 }
 
-const props = defineProps<Props>();
+const props = defineProps<{ productos: Producto[]; categorias: Categoria[] }>();
+const page = usePage();
+const { can } = usePermissions();
+const puedeGestionarPrecios = can('gestionar_productos');
+const busqueda = ref('');
+const categoriaActiva = ref('Todas');
+const carrito = ref<ItemCarrito[]>([]);
+const carritoAbierto = ref(false);
+const precioAbierto = ref(false);
+const productoAbierto = ref(false);
+const productoEditando = ref<Producto | null>(null);
+const precioForm = useForm({ precio_venta: '' });
+const unidadesMedida = [
+    'Unidad',
+    'Kilogramo',
+    'Libra',
+    'Litro',
+    'Quintal',
+    'Arroba',
+    'Caja',
+    'Bolsa',
+    'Saco',
+    'Paquete',
+    'Docena',
+];
+const productoForm = useForm({
+    nombre: '',
+    id_categoria: '' as string | number,
+    descripcion: '',
+    precio_venta: '',
+    stock: '0',
+    stock_minimo: '0',
+    unidad_medida: 'Unidad',
+});
+const pedidoForm = useForm({
+    cliente_nombre: page.props.auth.user?.name ?? '',
+    cliente_email: page.props.auth.user?.email ?? '',
+    cliente_telefono: '',
+    direccion: '',
+    metodo_pago: 'efectivo',
+    items: [] as Array<{ producto_id: number; cantidad: number }>,
+});
 
-const searchQuery = ref('');
-const expandedId = ref<number | null>(null);
-const expandedCategoria = ref<string | null>(null);
+const productosFiltrados = computed(() => {
+    const termino = busqueda.value.trim().toLocaleLowerCase();
 
-const filteredProductos = computed(() => {
-    if (!searchQuery.value) return props.productos;
+    return props.productos.filter((producto) => {
+        const coincideCategoria =
+            categoriaActiva.value === 'Todas' ||
+            producto.categoria === categoriaActiva.value;
+        const coincideBusqueda =
+            termino === '' ||
+            producto.nombre.toLocaleLowerCase().includes(termino) ||
+            producto.categoria.toLocaleLowerCase().includes(termino) ||
+            producto.descripcion?.toLocaleLowerCase().includes(termino);
 
-    const query = searchQuery.value.toLowerCase();
-    return props.productos.filter(p =>
-        p.nombre.toLowerCase().includes(query) ||
-        p.categoria.toLowerCase().includes(query) ||
-        (p.descripcion && p.descripcion.toLowerCase().includes(query))
-    );
+        return coincideCategoria && coincideBusqueda;
+    });
 });
 
 const productosPorCategoria = computed(() => {
-    const grouped: Record<string, Producto[]> = {};
-    for (const p of filteredProductos.value) {
-        if (!grouped[p.categoria]) {
-            grouped[p.categoria] = [];
-        }
-        grouped[p.categoria].push(p);
-    }
-    return grouped;
+    const grupos = new Map<string, Producto[]>();
+
+    productosFiltrados.value.forEach((producto) => {
+        const productos = grupos.get(producto.categoria) ?? [];
+        productos.push(producto);
+        grupos.set(producto.categoria, productos);
+    });
+
+    return Array.from(grupos, ([nombre, productos]) => ({
+        nombre,
+        icono:
+            props.categorias.find((categoria) => categoria.nombre === nombre)
+                ?.icono ?? '📦',
+        productos,
+    }));
 });
 
-const stats = computed(() => {
-    const total = props.productos.length;
-    const cats: Record<string, number> = {};
-    for (const p of props.productos) {
-        cats[p.categoria] = (cats[p.categoria] || 0) + 1;
-    }
-    return { total, cats };
+const lineasCarrito = computed(() =>
+    carrito.value.flatMap((item) => {
+        const producto = props.productos.find(
+            (candidato) => candidato.id === item.productoId,
+        );
+
+        return producto ? [{ ...item, producto }] : [];
+    }),
+);
+const cantidadCarrito = computed(() =>
+    carrito.value.reduce((total, item) => total + item.cantidad, 0),
+);
+const totalCarrito = computed(() =>
+    lineasCarrito.value.reduce(
+        (total, item) =>
+            total + Number(item.producto.precio_venta) * item.cantidad,
+        0,
+    ),
+);
+const primerErrorItems = computed(() => {
+    const errors = pedidoForm.errors as Record<string, string>;
+
+    return Object.entries(errors).find(([campo]) =>
+        campo.startsWith('items'),
+    )?.[1];
 });
 
-function toggleExpand(id: number) {
-    expandedId.value = expandedId.value === id ? null : id;
-}
-
-function toggleCategoria(cat: string) {
-    expandedCategoria.value = expandedCategoria.value === cat ? null : cat;
-}
-
-function getUnidadAbrev(unidad: string): string {
-    const mapa: Record<string, string> = {
-        'Unidad': 'unid', 'Kilogramo': 'kg', 'Libra': 'lb', 'Litro': 'L',
-        'Quintal': 'qq', 'Arroba': '@', 'Caja': 'caja', 'Bolsa': 'bolsa',
-        'Saco': 'saco', 'Paquete': 'pqte', 'Docena': 'doc',
-    };
-    return mapa[unidad] || unidad;
-}
-
-function formatCurrency(value: number | string) {
-    return new Intl.NumberFormat('es-HN', {
+function formatCurrency(value: number | string): string {
+    return new Intl.NumberFormat('es-BO', {
         style: 'currency',
-        currency: 'HNL'
-    }).format(parseFloat(String(value)));
+        currency: 'BOB',
+    }).format(Number(value));
 }
 
-const categoriaIconos: Record<string, string> = {
-    Panificados: '🥖',
-    Pizzas: '🍕',
-    Repostería: '🧁',
-    Bebidas: '🥤',
-    Otros: '📦',
-};
+function cantidadDe(productoId: number): number {
+    return (
+        carrito.value.find((item) => item.productoId === productoId)
+            ?.cantidad ?? 0
+    );
+}
 
-const categoriaColores: Record<string, { bg: string; text: string; badge: string; light: string }> = {
-    Panificados: { bg: 'bg-gradient-to-br from-amber-50 to-orange-50 dark:from-amber-950/20 dark:to-orange-950/20', text: 'text-amber-700 dark:text-amber-400', badge: 'bg-amber-500', light: 'bg-amber-500/10' },
-    Pizzas: { bg: 'bg-gradient-to-br from-red-50 to-rose-50 dark:from-red-950/20 dark:to-rose-950/20', text: 'text-red-700 dark:text-red-400', badge: 'bg-red-500', light: 'bg-red-500/10' },
-    Repostería: { bg: 'bg-gradient-to-br from-pink-50 to-purple-50 dark:from-pink-950/20 dark:to-purple-950/20', text: 'text-pink-700 dark:text-pink-400', badge: 'bg-pink-500', light: 'bg-pink-500/10' },
-    Bebidas: { bg: 'bg-gradient-to-br from-blue-50 to-cyan-50 dark:from-blue-950/20 dark:to-cyan-950/20', text: 'text-blue-700 dark:text-blue-400', badge: 'bg-blue-500', light: 'bg-blue-500/10' },
-    Otros: { bg: 'bg-gradient-to-br from-gray-50 to-slate-50 dark:from-gray-950/20 dark:to-slate-950/20', text: 'text-gray-700 dark:text-gray-400', badge: 'bg-gray-500', light: 'bg-gray-500/10' },
-};
+function agregar(producto: Producto): void {
+    const item = carrito.value.find(
+        (candidato) => candidato.productoId === producto.id,
+    );
+
+    if (item) {
+        if (item.cantidad < producto.stock) {
+            item.cantidad++;
+        }
+
+        return;
+    }
+
+    if (producto.stock > 0) {
+        carrito.value.push({ productoId: producto.id, cantidad: 1 });
+    }
+}
+
+function disminuir(productoId: number): void {
+    const item = carrito.value.find(
+        (candidato) => candidato.productoId === productoId,
+    );
+
+    if (!item) {
+        return;
+    }
+
+    if (item.cantidad === 1) {
+        return quitar(productoId);
+    }
+
+    item.cantidad--;
+}
+
+function quitar(productoId: number): void {
+    carrito.value = carrito.value.filter(
+        (item) => item.productoId !== productoId,
+    );
+}
+
+function abrirEdicionPrecio(producto: Producto): void {
+    productoEditando.value = producto;
+    precioForm.precio_venta = String(producto.precio_venta);
+    precioForm.clearErrors();
+    precioAbierto.value = true;
+}
+
+function guardarPrecio(): void {
+    if (!productoEditando.value) {
+        return;
+    }
+
+    precioForm.patch(actualizarPrecio.url(productoEditando.value), {
+        preserveScroll: true,
+        onSuccess: () => {
+            precioAbierto.value = false;
+            productoEditando.value = null;
+            precioForm.reset();
+        },
+    });
+}
+
+function guardarProducto(): void {
+    productoForm.post(registrarProducto.url(), {
+        preserveScroll: true,
+        onSuccess: () => {
+            productoAbierto.value = false;
+            productoForm.reset();
+        },
+    });
+}
+
+function efectuarCompra(): void {
+    pedidoForm.items = carrito.value.map((item) => ({
+        producto_id: item.productoId,
+        cantidad: item.cantidad,
+    }));
+    pedidoForm.post(registrarPedido.url());
+}
 </script>
 
 <template>
-    <Head title="Catálogo - Panadería Delicias" />
-
-    <div class="flex h-full flex-1 flex-col gap-4 overflow-hidden p-4">
-        <div class="relative overflow-hidden rounded-2xl bg-gradient-to-br from-black via-red-950 to-yellow-900 p-5 shadow-xl shadow-red-900/30">
-            <div class="absolute inset-0 opacity-10">
-                <svg class="h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-                    <defs>
-                        <pattern id="grid" width="10" height="10" patternUnits="userSpaceOnUse">
-                            <path d="M 10 0 L 0 0 0 10" fill="none" stroke="white" stroke-width="0.5"/>
-                        </pattern>
-                    </defs>
-                    <rect width="100" height="100" fill="url(#grid)"/>
-                </svg>
-            </div>
-            <div class="absolute -right-12 -top-12 h-48 w-48 rounded-full bg-red-600/30 blur-2xl animate-pulse"></div>
-            <div class="absolute -bottom-16 -left-16 h-40 w-40 rounded-full bg-yellow-600/25 blur-2xl animate-pulse" style="animation-delay: 1s"></div>
-
-            <div class="relative flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                <div class="flex items-center gap-3">
-                    <div class="relative">
-                        <div class="flex h-14 w-14 items-center justify-center rounded-xl bg-gradient-to-br from-red-600 to-yellow-500 shadow-xl shadow-red-500/30">
-                            <span class="text-2xl">🏪</span>
-                        </div>
-                        <div class="absolute -bottom-1.5 -right-1.5 flex h-6 w-6 items-center justify-center rounded-full bg-yellow-400 shadow-lg">
-                            <svg class="h-3 w-3 text-black" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M20 6L9 17l-5-5"/>
-                            </svg>
-                        </div>
-                    </div>
-                    <div>
-                        <h1 class="text-xl font-bold text-white">Catálogo de Productos</h1>
-                        <p class="text-yellow-200 text-sm">Explora nuestros productos por categoría</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Category Summary Cards -->
-        <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-6">
+    <Head title="Catálogo y pedidos" />
+    <main
+        class="mx-auto flex w-full max-w-screen-2xl flex-1 flex-col gap-5 p-3 sm:p-6"
+    >
+        <section
+            class="relative overflow-hidden rounded-2xl bg-gradient-to-br from-red-950 via-red-800 to-amber-600 p-5 text-white shadow-xl sm:p-8"
+        >
             <div
-                v-for="cat in categorias"
-                :key="cat.id"
-                @click="toggleCategoria(cat.nombre)"
-                class="group relative overflow-hidden rounded-xl border transition-all duration-300 cursor-pointer"
-                :class="[
-                    expandedCategoria === cat.nombre ? 'ring-2 ring-yellow-500 shadow-lg' : 'border-border/50 bg-card shadow-sm hover:shadow-md',
-                ]"
-            >
-                <div class="flex items-center gap-3 p-3">
-                    <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg text-lg shadow-sm bg-gradient-to-br"
-                        :class="expandedCategoria === cat.nombre ? 'from-yellow-500 to-amber-500' : (cat.icono ? 'from-gray-500 to-slate-500' : 'from-gray-500 to-slate-500')">
-                        <span class="text-white">{{ cat.icono || '📦' }}</span>
-                    </div>
-                    <div class="min-w-0">
-                        <p class="text-xs font-medium text-muted-foreground truncate">{{ cat.nombre }}</p>
-                        <div class="flex items-baseline gap-1">
-                            <span class="text-lg font-bold">{{ stats.cats[cat.nombre] || 0 }}</span>
-                            <span class="text-xs text-muted-foreground">productos</span>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Search -->
-        <div class="relative w-full sm:max-w-md">
-            <svg class="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="11" cy="11" r="8"/>
-                <path d="m21 21-4.3-4.3"/>
-            </svg>
-            <input
-                v-model="searchQuery"
-                placeholder="Buscar productos en el catálogo..."
-                class="w-full rounded-xl border border-border/50 bg-card pl-10 pr-4 py-2.5 text-sm shadow-sm focus:outline-none focus:ring-2 focus:ring-yellow-500/50"
+                class="absolute -top-16 -right-12 h-56 w-56 rounded-full bg-yellow-300/20 blur-3xl"
             />
-        </div>
+            <div
+                class="relative flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between"
+            >
+                <div class="max-w-2xl">
+                    <span
+                        class="inline-flex rounded-full bg-white/15 px-3 py-1 text-xs font-semibold backdrop-blur"
+                        >Panadería El Choquito</span
+                    >
+                    <h1
+                        class="mt-3 text-2xl font-black tracking-tight sm:text-4xl"
+                    >
+                        Catálogo y pedidos
+                    </h1>
+                    <p class="mt-2 text-sm text-amber-50 sm:text-base">
+                        Selecciona productos, confirma las cantidades y completa
+                        la compra en pocos pasos.
+                    </p>
+                </div>
+                <div class="flex w-full flex-col gap-2 sm:flex-row lg:w-auto">
+                    <Button
+                        v-if="puedeGestionarPrecios"
+                        class="h-12 w-full bg-amber-400 text-black hover:bg-amber-300 lg:w-auto"
+                        @click="productoAbierto = true"
+                        >＋ Nuevo producto</Button
+                    >
+                    <Button
+                        class="h-12 w-full bg-white text-red-900 hover:bg-amber-50 lg:w-auto"
+                        @click="carritoAbierto = true"
+                    >
+                        🛒 Ver carrito
+                        <span
+                            class="ml-2 rounded-full bg-red-700 px-2 py-0.5 text-xs text-white"
+                            >{{ cantidadCarrito }}</span
+                        >
+                    </Button>
+                </div>
+            </div>
+        </section>
 
-        <!-- Catalog Grid grouped by categories -->
-        <div class="flex-1 overflow-auto">
-            <div class="space-y-6">
-                <div
-                    v-for="(productos, categoria) in productosPorCategoria"
-                    :key="categoria"
-                    class="rounded-xl border transition-all duration-300 overflow-hidden"
-                    :class="[
-                        expandedCategoria === categoria ? 'border-yellow-500 shadow-lg shadow-yellow-500/20' : 'border-border/50',
-                        categoriaColores[categoria]?.bg || ''
-                    ]"
+        <section class="space-y-3">
+            <div class="flex flex-col gap-3 sm:flex-row">
+                <div class="relative flex-1">
+                    <span
+                        class="pointer-events-none absolute top-1/2 left-3 -translate-y-1/2"
+                        >🔎</span
+                    >
+                    <Input
+                        v-model="busqueda"
+                        class="h-11 pl-10"
+                        placeholder="Buscar por producto o categoría..."
+                    />
+                </div>
+                <Button
+                    v-if="cantidadCarrito > 0"
+                    class="h-11 sm:hidden"
+                    @click="carritoAbierto = true"
+                    >Continuar compra ·
+                    {{ formatCurrency(totalCarrito) }}</Button
                 >
-                    <div
-                        @click="toggleCategoria(categoria)"
-                        class="flex items-center justify-between px-5 py-4 cursor-pointer select-none"
-                        :class="expandedCategoria === categoria ? 'border-b border-yellow-500/30' : ''"
-                    >
-                        <div class="flex items-center gap-3">
-                            <span class="text-2xl">{{ categoriaIconos[categoria] || '📦' }}</span>
-                            <div>
-                                <h2 class="text-lg font-bold" :class="categoriaColores[categoria]?.text || ''">{{ categoria }}</h2>
-                                <p class="text-xs text-muted-foreground">{{ productos.length }} producto{{ productos.length !== 1 ? 's' : '' }}</p>
-                            </div>
-                        </div>
-                        <div class="flex items-center gap-2">
-                            <div class="flex gap-1">
-                                <div v-for="(prod, i) in productos.slice(0, 4)" :key="i"
-                                    class="flex h-7 w-7 items-center justify-center rounded-full text-xs font-bold shadow-sm"
-                                    :class="categoriaColores[categoria]?.badge || 'bg-gray-500'">
-                                    <span class="text-white">{{ prod.nombre.charAt(0) }}</span>
-                                </div>
-                            </div>
-                            <svg class="h-5 w-5 transition-transform duration-300 text-muted-foreground"
-                                :class="expandedCategoria === categoria ? 'rotate-180' : ''"
-                                xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="m6 9 6 6 6-6"/>
-                            </svg>
-                        </div>
-                    </div>
+            </div>
+            <div class="flex gap-2 overflow-x-auto pb-1">
+                <button
+                    v-for="categoria in [
+                        { id: 0, nombre: 'Todas', icono: '✨' },
+                        ...categorias,
+                    ]"
+                    :key="categoria.id"
+                    type="button"
+                    class="shrink-0 rounded-full border px-4 py-2 text-sm font-medium transition"
+                    :class="
+                        categoriaActiva === categoria.nombre
+                            ? 'border-amber-500 bg-amber-500 text-black'
+                            : 'border-border bg-card hover:border-amber-500'
+                    "
+                    @click="categoriaActiva = categoria.nombre"
+                >
+                    {{ categoria.icono || '📦' }} {{ categoria.nombre }}
+                </button>
+            </div>
+        </section>
 
-                    <div
-                        class="overflow-hidden transition-all duration-300"
-                        :class="expandedCategoria === categoria ? 'max-h-[2000px] opacity-100' : 'max-h-0 opacity-0'"
+        <div v-if="productosPorCategoria.length" class="space-y-7">
+            <section
+                v-for="grupo in productosPorCategoria"
+                :key="grupo.nombre"
+                class="space-y-3"
+            >
+                <header class="flex items-center gap-3 border-b pb-3">
+                    <span
+                        class="flex h-11 w-11 items-center justify-center rounded-xl bg-amber-500/15 text-2xl"
+                        >{{ grupo.icono }}</span
                     >
-                        <div class="p-5">
-                            <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-                                <div
-                                    v-for="producto in productos"
-                                    :key="producto.id"
-                                    class="group relative overflow-hidden rounded-xl border bg-white dark:bg-gray-950 transition-all duration-300 cursor-pointer"
-                                    :class="expandedId === producto.id ? 'border-yellow-500 shadow-lg shadow-yellow-500/20' : 'border-border/50 shadow-sm hover:shadow-md hover:border-yellow-500/50'"
-                                    @click="toggleExpand(producto.id)"
+                    <div>
+                        <h2 class="text-xl font-black">{{ grupo.nombre }}</h2>
+                        <p class="text-sm text-muted-foreground">
+                            {{ grupo.productos.length }} producto{{
+                                grupo.productos.length === 1 ? '' : 's'
+                            }}
+                        </p>
+                    </div>
+                </header>
+                <div
+                    class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4"
+                >
+                    <article
+                        v-for="producto in grupo.productos"
+                        :key="producto.id"
+                        class="flex min-w-0 flex-col overflow-hidden rounded-2xl border border-border/70 bg-card shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg"
+                    >
+                        <div
+                            class="flex min-h-32 items-center justify-center bg-gradient-to-br from-amber-100 to-orange-200 p-5 dark:from-amber-950/40 dark:to-red-950/30"
+                        >
+                            <span class="text-6xl" aria-hidden="true">{{
+                                categorias.find(
+                                    (categoria) =>
+                                        categoria.nombre === producto.categoria,
+                                )?.icono || '🥖'
+                            }}</span>
+                        </div>
+                        <div class="flex flex-1 flex-col gap-3 p-4">
+                            <div class="flex items-start justify-between gap-3">
+                                <div class="min-w-0">
+                                    <p
+                                        class="text-xs font-semibold tracking-wide text-amber-600 uppercase"
+                                    >
+                                        {{ producto.categoria }}
+                                    </p>
+                                    <h2 class="truncate text-lg font-bold">
+                                        {{ producto.nombre }}
+                                    </h2>
+                                </div>
+                                <button
+                                    v-if="puedeGestionarPrecios"
+                                    type="button"
+                                    class="shrink-0 rounded-lg border px-2.5 py-1.5 text-xs font-semibold hover:border-amber-500 hover:bg-amber-500/10"
+                                    :aria-label="`Editar precio de ${producto.nombre}`"
+                                    @click="abrirEdicionPrecio(producto)"
                                 >
-                                    <div class="absolute top-0 left-0 right-0 h-1" :class="categoriaColores[producto.categoria]?.badge || 'bg-gray-500'"></div>
-
-                                    <div class="p-4">
-                                        <div class="flex items-center gap-3 mb-3">
-                                            <div class="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl text-xl shadow-md"
-                                                :class="'bg-gradient-to-br ' + (categoriaColores[producto.categoria]?.bg || 'from-gray-500 to-slate-500')">
-                                                <span class="text-white font-bold">{{ producto.nombre.charAt(0) }}</span>
-                                            </div>
-                                            <div class="min-w-0 flex-1">
-                                                <h3 class="font-bold text-sm truncate group-hover:text-amber-600 transition-colors">{{ producto.nombre }}</h3>
-                                                <span class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium text-white"
-                                                    :class="categoriaColores[producto.categoria]?.badge || 'bg-gray-500'">
-                                                    {{ producto.categoria }}
-                                                </span>
-                                            </div>
-                                        </div>
-
-                                        <div class="flex items-baseline justify-between mb-2">
-                                            <div>
-                                                <span class="text-2xl font-bold text-yellow-500">{{ formatCurrency(producto.precio_venta) }}</span>
-                                                <span class="text-xs text-muted-foreground"> /{{ producto.unidad_medida }}</span>
-                                            </div>
-                                            <div class="flex items-center gap-1 rounded-lg px-2 py-1"
-                                                :class="producto.stock <= producto.stock_minimo ? 'bg-amber-500/10' : 'bg-emerald-500/10'">
-                                                <span class="text-xs font-bold" :class="producto.stock <= producto.stock_minimo ? 'text-amber-500' : 'text-emerald-500'">
-                                                    {{ producto.stock }}
-                                                </span>
-                                                <span class="text-xs text-muted-foreground">{{ getUnidadAbrev(producto.unidad_medida) }}</span>
-                                            </div>
-                                        </div>
-
-                                        <div v-if="producto.descripcion" class="text-xs text-muted-foreground line-clamp-2 mb-2">
-                                            {{ producto.descripcion }}
-                                        </div>
-
-                                        <div v-if="producto.stock <= producto.stock_minimo && producto.stock > 0"
-                                            class="flex items-center gap-1.5 rounded-lg bg-amber-500/10 px-2 py-1 text-xs text-amber-600 dark:text-amber-400">
-                                            <svg class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                                <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
-                                                <line x1="12" x2="12" y1="9" y2="13"/>
-                                                <line x1="12" x2="12.01" y1="17" y2="17"/>
-                                            </svg>
-                                            <span>Stock bajo (mín. {{ producto.stock_minimo }})</span>
-                                        </div>
-
-                                        <div v-if="producto.stock === 0"
-                                            class="flex items-center gap-1.5 rounded-lg bg-red-500/10 px-2 py-1 text-xs text-red-600 dark:text-red-400">
-                                            <svg class="h-3 w-3" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                                <circle cx="12" cy="12" r="10"/>
-                                                <path d="m15 9-6 6"/>
-                                                <path d="m9 9 6 6"/>
-                                            </svg>
-                                            <span>Sin stock</span>
-                                        </div>
-
-                                        <transition name="expand">
-                                            <div v-if="expandedId === producto.id" class="mt-3 pt-3 border-t border-border/50">
-                                                <div class="grid grid-cols-2 gap-2 text-center text-xs">
-                                                    <div class="rounded-lg bg-muted/50 p-2">
-                                                        <p class="text-muted-foreground">Precio Compra</p>
-                                                        <p class="font-bold">{{ formatCurrency(producto.precio_compra) }}</p>
-                                                    </div>
-                                                    <div class="rounded-lg bg-muted/50 p-2">
-                                                        <p class="text-muted-foreground">Stock Mínimo</p>
-                                                        <p class="font-bold">{{ producto.stock_minimo }} {{ getUnidadAbrev(producto.unidad_medida) }}</p>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </transition>
-                                    </div>
-                                </div>
+                                    ✏️ Precio
+                                </button>
                             </div>
+                            <p
+                                v-if="producto.descripcion"
+                                class="line-clamp-2 min-h-10 text-sm text-muted-foreground"
+                            >
+                                {{ producto.descripcion }}
+                            </p>
+                            <div
+                                v-else
+                                class="min-h-10 text-sm text-muted-foreground"
+                            >
+                                Producto disponible para pedido.
+                            </div>
+                            <div
+                                class="mt-auto flex items-end justify-between gap-3"
+                            >
+                                <div>
+                                    <p
+                                        class="text-2xl font-black text-amber-600"
+                                    >
+                                        {{
+                                            formatCurrency(
+                                                producto.precio_venta,
+                                            )
+                                        }}
+                                    </p>
+                                    <p class="text-xs text-muted-foreground">
+                                        por
+                                        {{
+                                            producto.unidad_medida.toLocaleLowerCase()
+                                        }}
+                                    </p>
+                                </div>
+                                <span
+                                    class="rounded-full px-2.5 py-1 text-xs font-semibold"
+                                    :class="
+                                        producto.stock === 0
+                                            ? 'bg-red-500/10 text-red-600'
+                                            : producto.stock <=
+                                                producto.stock_minimo
+                                              ? 'bg-amber-500/10 text-amber-700'
+                                              : 'bg-emerald-500/10 text-emerald-700'
+                                    "
+                                    >{{
+                                        producto.stock === 0
+                                            ? 'Agotado'
+                                            : `${producto.stock} disponibles`
+                                    }}</span
+                                >
+                            </div>
+                            <div
+                                v-if="cantidadDe(producto.id)"
+                                class="grid grid-cols-[2.75rem_1fr_2.75rem] items-center overflow-hidden rounded-xl border"
+                            >
+                                <button
+                                    type="button"
+                                    class="h-11 text-xl hover:bg-muted"
+                                    @click="disminuir(producto.id)"
+                                >
+                                    −</button
+                                ><span class="text-center font-bold"
+                                    >{{ cantidadDe(producto.id) }} en
+                                    carrito</span
+                                ><button
+                                    type="button"
+                                    class="h-11 text-xl hover:bg-muted disabled:opacity-40"
+                                    :disabled="
+                                        cantidadDe(producto.id) >=
+                                        producto.stock
+                                    "
+                                    @click="agregar(producto)"
+                                >
+                                    +
+                                </button>
+                            </div>
+                            <Button
+                                v-else
+                                class="h-11 w-full bg-amber-500 text-black hover:bg-amber-400"
+                                :disabled="producto.stock === 0"
+                                @click="agregar(producto)"
+                                >{{
+                                    producto.stock === 0
+                                        ? 'Sin existencias'
+                                        : 'Agregar al pedido'
+                                }}</Button
+                            >
                         </div>
+                    </article>
+                </div>
+            </section>
+        </div>
+        <section
+            v-else
+            class="rounded-2xl border border-dashed bg-card p-10 text-center"
+        >
+            <div class="text-5xl">🔍</div>
+            <h2 class="mt-3 text-lg font-bold">No encontramos productos</h2>
+            <p class="text-sm text-muted-foreground">
+                Prueba otra búsqueda o elige una categoría diferente.
+            </p>
+        </section>
+        <button
+            v-if="cantidadCarrito > 0"
+            type="button"
+            class="fixed right-5 bottom-5 z-30 hidden items-center gap-3 rounded-full bg-red-800 px-5 py-3 text-sm font-bold text-white shadow-2xl transition hover:scale-105 sm:flex"
+            @click="carritoAbierto = true"
+        >
+            🛒 {{ cantidadCarrito }} · {{ formatCurrency(totalCarrito) }}
+        </button>
+    </main>
+
+    <Dialog :open="productoAbierto" @update:open="productoAbierto = $event">
+        <DialogContent class="max-h-[92vh] overflow-y-auto sm:max-w-2xl">
+            <DialogHeader>
+                <DialogTitle>Agregar producto al catálogo</DialogTitle>
+                <DialogDescription
+                    >Registra lo que vas a vender y selecciona la categoría
+                    donde aparecerá.</DialogDescription
+                >
+            </DialogHeader>
+            <form class="space-y-4" @submit.prevent="guardarProducto">
+                <div class="grid gap-4 sm:grid-cols-2">
+                    <div class="space-y-2 sm:col-span-2">
+                        <Label for="producto-nombre">Nombre del producto</Label>
+                        <Input
+                            id="producto-nombre"
+                            v-model="productoForm.nombre"
+                            maxlength="255"
+                            placeholder="Ej. Pan de queso"
+                            required
+                            autofocus
+                        />
+                        <InputError :message="productoForm.errors.nombre" />
+                    </div>
+                    <div class="space-y-2">
+                        <Label for="producto-categoria">Categoría</Label>
+                        <select
+                            id="producto-categoria"
+                            v-model="productoForm.id_categoria"
+                            class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            required
+                        >
+                            <option value="" disabled>
+                                Selecciona una categoría
+                            </option>
+                            <option
+                                v-for="categoria in categorias"
+                                :key="categoria.id"
+                                :value="categoria.id"
+                            >
+                                {{ categoria.icono || '📦' }}
+                                {{ categoria.nombre }}
+                            </option>
+                        </select>
+                        <InputError
+                            :message="productoForm.errors.id_categoria"
+                        />
+                    </div>
+                    <div class="space-y-2">
+                        <Label for="producto-unidad">Unidad de venta</Label>
+                        <select
+                            id="producto-unidad"
+                            v-model="productoForm.unidad_medida"
+                            class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            required
+                        >
+                            <option
+                                v-for="unidad in unidadesMedida"
+                                :key="unidad"
+                                :value="unidad"
+                            >
+                                {{ unidad }}
+                            </option>
+                        </select>
+                        <InputError
+                            :message="productoForm.errors.unidad_medida"
+                        />
+                    </div>
+                    <div class="space-y-2">
+                        <Label for="producto-precio"
+                            >Precio de venta (Bs)</Label
+                        >
+                        <Input
+                            id="producto-precio"
+                            v-model="productoForm.precio_venta"
+                            type="number"
+                            min="0.01"
+                            max="99999999.99"
+                            step="0.01"
+                            placeholder="0.00"
+                            required
+                        />
+                        <InputError
+                            :message="productoForm.errors.precio_venta"
+                        />
+                    </div>
+                    <div class="space-y-2">
+                        <Label for="producto-stock">Cantidad disponible</Label>
+                        <Input
+                            id="producto-stock"
+                            v-model="productoForm.stock"
+                            type="number"
+                            min="0"
+                            step="1"
+                            required
+                        />
+                        <InputError :message="productoForm.errors.stock" />
+                    </div>
+                    <div class="space-y-2">
+                        <Label for="producto-stock-minimo"
+                            >Avisar cuando queden</Label
+                        >
+                        <Input
+                            id="producto-stock-minimo"
+                            v-model="productoForm.stock_minimo"
+                            type="number"
+                            min="0"
+                            step="1"
+                            required
+                        />
+                        <InputError
+                            :message="productoForm.errors.stock_minimo"
+                        />
+                    </div>
+                    <div class="space-y-2 sm:col-span-2">
+                        <Label for="producto-descripcion">Descripción</Label>
+                        <textarea
+                            id="producto-descripcion"
+                            v-model="productoForm.descripcion"
+                            rows="3"
+                            maxlength="500"
+                            class="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            placeholder="Descripción opcional del producto"
+                        />
+                        <InputError
+                            :message="productoForm.errors.descripcion"
+                        />
                     </div>
                 </div>
-            </div>
+                <DialogFooter class="gap-2">
+                    <Button
+                        type="button"
+                        variant="outline"
+                        @click="productoAbierto = false"
+                        >Cancelar</Button
+                    >
+                    <Button
+                        type="submit"
+                        class="bg-amber-500 text-black hover:bg-amber-400"
+                        :disabled="productoForm.processing"
+                        >{{
+                            productoForm.processing
+                                ? 'Guardando...'
+                                : 'Agregar al catálogo'
+                        }}</Button
+                    >
+                </DialogFooter>
+            </form>
+        </DialogContent>
+    </Dialog>
 
-            <div v-if="Object.keys(productosPorCategoria).length === 0" class="flex flex-col items-center gap-4 rounded-xl border border-border/50 bg-card p-12">
-                <span class="text-5xl">🔍</span>
-                <div class="text-center">
-                    <p class="text-lg font-bold text-foreground">Sin resultados</p>
-                    <p class="text-sm text-muted-foreground">No hay productos que coincidan con tu búsqueda</p>
+    <Dialog :open="precioAbierto" @update:open="precioAbierto = $event">
+        <DialogContent class="sm:max-w-md"
+            ><DialogHeader
+                ><DialogTitle>Actualizar precio de venta</DialogTitle
+                ><DialogDescription
+                    >{{ productoEditando?.nombre }}. El nuevo precio se aplicará
+                    a los próximos pedidos.</DialogDescription
+                ></DialogHeader
+            >
+            <form class="space-y-4" @submit.prevent="guardarPrecio">
+                <div class="space-y-2">
+                    <Label for="precio_venta">Precio en bolivianos</Label
+                    ><Input
+                        id="precio_venta"
+                        v-model="precioForm.precio_venta"
+                        type="number"
+                        min="0.01"
+                        max="9999999999.99"
+                        step="0.01"
+                        required
+                        autofocus
+                    /><InputError :message="precioForm.errors.precio_venta" />
                 </div>
-            </div>
-        </div>
+                <DialogFooter
+                    ><Button
+                        type="button"
+                        variant="outline"
+                        @click="precioAbierto = false"
+                        >Cancelar</Button
+                    ><Button type="submit" :disabled="precioForm.processing">{{
+                        precioForm.processing
+                            ? 'Guardando...'
+                            : 'Guardar precio'
+                    }}</Button></DialogFooter
+                >
+            </form>
+        </DialogContent>
+    </Dialog>
 
-        <div class="flex items-center justify-between rounded-xl border border-border/50 bg-card p-3">
-            <p class="text-sm text-muted-foreground">
-                <span class="font-medium text-foreground">{{ props.productos.length }}</span> productos en
-                <span class="font-medium text-foreground">{{ Object.keys(productosPorCategoria).length }}</span> categorías
-            </p>
-            <div class="flex gap-2">
-                <span v-for="cat in categorias" :key="cat.id" class="rounded-full px-2.5 py-1 text-xs font-medium text-white bg-gray-500">
-                    {{ cat.icono || '📦' }} {{ stats.cats[cat.nombre] || 0 }}
-                </span>
+    <Dialog :open="carritoAbierto" @update:open="carritoAbierto = $event">
+        <DialogContent class="max-h-[92vh] overflow-y-auto sm:max-w-3xl"
+            ><DialogHeader
+                ><DialogTitle>Finalizar pedido</DialogTitle
+                ><DialogDescription
+                    >Revisa el carrito y registra los datos del
+                    comprador.</DialogDescription
+                ></DialogHeader
+            >
+            <div
+                v-if="lineasCarrito.length"
+                class="grid gap-6 lg:grid-cols-[1fr_1.15fr]"
+            >
+                <section class="space-y-3">
+                    <h3 class="font-semibold">Resumen de compra</h3>
+                    <div
+                        v-for="item in lineasCarrito"
+                        :key="item.producto.id"
+                        class="rounded-xl border p-3"
+                    >
+                        <div class="flex items-start justify-between gap-3">
+                            <div class="min-w-0">
+                                <p class="truncate font-semibold">
+                                    {{ item.producto.nombre }}
+                                </p>
+                                <p class="text-xs text-muted-foreground">
+                                    {{
+                                        formatCurrency(
+                                            item.producto.precio_venta,
+                                        )
+                                    }}
+                                    c/u
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                class="text-xs font-semibold text-red-600 hover:underline"
+                                @click="quitar(item.producto.id)"
+                            >
+                                Quitar
+                            </button>
+                        </div>
+                        <div class="mt-3 flex items-center justify-between">
+                            <div
+                                class="flex items-center overflow-hidden rounded-lg border"
+                            >
+                                <button
+                                    type="button"
+                                    class="h-9 w-9 hover:bg-muted"
+                                    @click="disminuir(item.producto.id)"
+                                >
+                                    −</button
+                                ><span
+                                    class="w-10 text-center text-sm font-bold"
+                                    >{{ item.cantidad }}</span
+                                ><button
+                                    type="button"
+                                    class="h-9 w-9 hover:bg-muted disabled:opacity-40"
+                                    :disabled="
+                                        item.cantidad >= item.producto.stock
+                                    "
+                                    @click="agregar(item.producto)"
+                                >
+                                    +
+                                </button>
+                            </div>
+                            <strong>{{
+                                formatCurrency(
+                                    Number(item.producto.precio_venta) *
+                                        item.cantidad,
+                                )
+                            }}</strong>
+                        </div>
+                    </div>
+                    <div
+                        class="flex items-center justify-between rounded-xl bg-amber-500/10 p-4 text-lg"
+                    >
+                        <span class="font-semibold">Total</span
+                        ><strong class="text-xl text-amber-700">{{
+                            formatCurrency(totalCarrito)
+                        }}</strong>
+                    </div>
+                </section>
+                <form
+                    id="pedido-form"
+                    class="space-y-4"
+                    @submit.prevent="efectuarCompra"
+                >
+                    <h3 class="font-semibold">Datos del comprador</h3>
+                    <div class="space-y-2">
+                        <Label for="cliente_nombre">Nombre completo</Label
+                        ><Input
+                            id="cliente_nombre"
+                            v-model="pedidoForm.cliente_nombre"
+                            autocomplete="name"
+                            required
+                        /><InputError
+                            :message="pedidoForm.errors.cliente_nombre"
+                        />
+                    </div>
+                    <div class="grid gap-4 sm:grid-cols-2">
+                        <div class="space-y-2">
+                            <Label for="cliente_email">Correo electrónico</Label
+                            ><Input
+                                id="cliente_email"
+                                v-model="pedidoForm.cliente_email"
+                                type="email"
+                                autocomplete="email"
+                                required
+                            /><InputError
+                                :message="pedidoForm.errors.cliente_email"
+                            />
+                        </div>
+                        <div class="space-y-2">
+                            <Label for="cliente_telefono">Teléfono</Label
+                            ><Input
+                                id="cliente_telefono"
+                                v-model="pedidoForm.cliente_telefono"
+                                autocomplete="tel"
+                                placeholder="Opcional"
+                            /><InputError
+                                :message="pedidoForm.errors.cliente_telefono"
+                            />
+                        </div>
+                    </div>
+                    <div class="space-y-2">
+                        <Label for="direccion">Dirección</Label
+                        ><Input
+                            id="direccion"
+                            v-model="pedidoForm.direccion"
+                            autocomplete="street-address"
+                            placeholder="Opcional"
+                        /><InputError :message="pedidoForm.errors.direccion" />
+                    </div>
+                    <fieldset class="space-y-2">
+                        <legend class="text-sm font-medium">
+                            Método de pago
+                        </legend>
+                        <div class="grid grid-cols-2 gap-3">
+                            <label
+                                class="cursor-pointer rounded-xl border p-3 text-sm"
+                                :class="
+                                    pedidoForm.metodo_pago === 'efectivo'
+                                        ? 'border-amber-500 bg-amber-500/10'
+                                        : ''
+                                "
+                                ><input
+                                    v-model="pedidoForm.metodo_pago"
+                                    class="mr-2"
+                                    type="radio"
+                                    value="efectivo"
+                                />
+                                Efectivo</label
+                            ><label
+                                class="cursor-pointer rounded-xl border p-3 text-sm"
+                                :class="
+                                    pedidoForm.metodo_pago === 'transferencia'
+                                        ? 'border-amber-500 bg-amber-500/10'
+                                        : ''
+                                "
+                                ><input
+                                    v-model="pedidoForm.metodo_pago"
+                                    class="mr-2"
+                                    type="radio"
+                                    value="transferencia"
+                                />
+                                Transferencia</label
+                            >
+                        </div>
+                        <InputError :message="pedidoForm.errors.metodo_pago" />
+                    </fieldset>
+                    <InputError
+                        :message="pedidoForm.errors.items || primerErrorItems"
+                    />
+                </form>
             </div>
-        </div>
-    </div>
+            <div v-else class="rounded-xl border border-dashed p-8 text-center">
+                <div class="text-4xl">🛒</div>
+                <p class="mt-2 font-semibold">Tu carrito está vacío</p>
+                <p class="text-sm text-muted-foreground">
+                    Agrega al menos un producto para continuar.
+                </p>
+            </div>
+            <DialogFooter v-if="lineasCarrito.length" class="gap-2"
+                ><Button
+                    type="button"
+                    variant="outline"
+                    @click="carritoAbierto = false"
+                    >Seguir comprando</Button
+                ><Button
+                    form="pedido-form"
+                    type="submit"
+                    class="bg-emerald-600 hover:bg-emerald-500"
+                    :disabled="pedidoForm.processing"
+                    >{{
+                        pedidoForm.processing
+                            ? 'Procesando...'
+                            : `Efectuar compra · ${formatCurrency(totalCarrito)}`
+                    }}</Button
+                ></DialogFooter
+            >
+        </DialogContent>
+    </Dialog>
 </template>
-
-<style scoped>
-.line-clamp-2 {
-    display: -webkit-box;
-    -webkit-line-clamp: 2;
-    -webkit-box-orient: vertical;
-    overflow: hidden;
-}
-
-.expand-enter-active,
-.expand-leave-active {
-    transition: all 0.2s ease;
-}
-
-.expand-enter-from,
-.expand-leave-to {
-    opacity: 0;
-    max-height: 0;
-}
-</style>

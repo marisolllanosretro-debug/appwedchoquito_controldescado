@@ -3,6 +3,7 @@
 use App\Http\Controllers\Categorias\CategoriaController;
 use App\Http\Controllers\Clientes\ClienteController;
 use App\Http\Controllers\Compras\CompraController;
+use App\Http\Controllers\Pedidos\PedidoController;
 use App\Http\Controllers\Productos\ProductoController;
 use App\Http\Controllers\Proveedores\ProveedorController;
 use App\Http\Controllers\RoleController;
@@ -13,6 +14,12 @@ use Laravel\Fortify\Features;
 Route::inertia('/', 'Welcome', [
     'canRegister' => Features::enabled(Features::registration()),
 ])->name('home');
+
+Route::get('catalogo', [ProductoController::class, 'catalogo'])->name('catalogo');
+Route::post('pedidos', [PedidoController::class, 'store'])
+    ->middleware('throttle:20,1')
+    ->name('pedidos.store');
+Route::get('pedidos/{pedido}', [PedidoController::class, 'show'])->name('pedidos.show');
 
 Route::middleware(['auth', 'verified'])->group(function () {
     Route::inertia('dashboard', 'Dashboard')->name('dashboard');
@@ -54,10 +61,10 @@ Route::middleware(['auth', 'verified'])->group(function () {
             Route::post('productos', [ProductoController::class, 'store'])->name('productos.store');
             Route::put('productos/{producto}', [ProductoController::class, 'update'])->name('productos.update');
             Route::delete('productos/{producto}', [ProductoController::class, 'destroy'])->name('productos.destroy');
+            Route::patch('catalogo/productos/{producto}/precio', [ProductoController::class, 'updatePrecio'])
+                ->name('catalogo.productos.precio');
         });
     });
-
-    Route::get('catalogo', [ProductoController::class, 'catalogo'])->name('catalogo');
 
     Route::middleware('permiso:gestionar_categorias')->group(function () {
         Route::get('categorias', [CategoriaController::class, 'index'])->name('categorias.index');

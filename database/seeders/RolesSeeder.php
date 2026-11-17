@@ -15,6 +15,9 @@ class RolesSeeder extends Seeder
             'permisos' => [
                 'clientes' => 'gestionar',
                 'compras' => 'gestionar',
+                'proveedores' => 'gestionar',
+                'productos' => 'gestionar',
+                'categorias' => 'gestionar',
                 'usuarios' => 'gestionar',
                 'roles' => 'gestionar',
             ],

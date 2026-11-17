@@ -50,6 +50,13 @@ class UserController extends Controller
             return redirect()->back()->with('error', 'No puedes cambiarte el rol a ti mismo.');
         }
 
+        if ($user->isActivo()
+            && $user->esAdministrador()
+            && (int) $validated['id_rol'] !== User::ROL_ADMINISTRADOR
+            && User::activo()->where('id_rol', User::ROL_ADMINISTRADOR)->count() <= 1) {
+            return redirect()->back()->with('error', 'No puedes cambiar el rol del último administrador activo.');
+        }
+
         $data = [
             'name' => $validated['name'],
             'apellido_paterno' => $validated['apellido_paterno'] ?? null,
@@ -91,11 +98,14 @@ class UserController extends Controller
 
     public function destroy(User $user): RedirectResponse
     {
-        if ($user->esAdministrador()) {
-            $adminCount = User::where('id_rol', User::ROL_ADMINISTRADOR)->count();
-            if ($adminCount <= 1) {
-                return redirect()->back()->with('error', 'No puedes eliminar al último administrador del sistema.');
-            }
+        if (auth()->id() === $user->id) {
+            return redirect()->back()->with('error', 'No puedes eliminar tu propia cuenta.');
+        }
+
+        if ($user->isActivo()
+            && $user->esAdministrador()
+            && User::activo()->where('id_rol', User::ROL_ADMINISTRADOR)->count() <= 1) {
+            return redirect()->back()->with('error', 'No puedes eliminar al último administrador activo.');
         }
 
         $user->delete();

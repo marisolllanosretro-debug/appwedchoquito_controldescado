@@ -2,6 +2,7 @@
 
 use App\Models\User;
 use Database\Seeders\RolesSeeder;
+use Database\Seeders\UsuariosSeeder;
 
 beforeEach(fn () => $this->seed(RolesSeeder::class));
 
@@ -87,6 +88,25 @@ it('admin cannot self-remove role', function () {
     expect($admin->fresh()->hasRol(User::ROL_ADMINISTRADOR))->toBeTrue();
 });
 
+it('cannot remove the role from the last active admin', function () {
+    $admin = userWithRole(User::ROL_ADMINISTRADOR);
+    $inactiveAdmin = User::factory()->create([
+        'id_rol' => User::ROL_ADMINISTRADOR,
+        'activo' => false,
+    ]);
+
+    $this->actingAs($inactiveAdmin)
+        ->put("/usuarios/{$admin->id}", [
+            'name' => $admin->name,
+            'email' => $admin->email,
+            'password' => '',
+            'id_rol' => User::ROL_CAJERA,
+        ])
+        ->assertRedirect();
+
+    expect($admin->fresh()->esAdministrador())->toBeTrue();
+});
+
 it('admin can delete a non-admin user', function () {
     $admin = userWithRole(User::ROL_ADMINISTRADOR);
     $target = User::factory()->create(['id_rol' => User::ROL_CAJERA]);
@@ -100,8 +120,12 @@ it('admin can delete a non-admin user', function () {
 
 it('cannot delete the last admin', function () {
     $admin = userWithRole(User::ROL_ADMINISTRADOR);
+    $inactiveAdmin = User::factory()->create([
+        'id_rol' => User::ROL_ADMINISTRADOR,
+        'activo' => false,
+    ]);
 
-    $this->actingAs($admin)
+    $this->actingAs($inactiveAdmin)
         ->delete("/usuarios/{$admin->id}")
         ->assertRedirect();
 
@@ -117,6 +141,29 @@ it('can delete admin if another admin exists', function () {
         ->assertRedirect();
 
     expect($otherAdmin->fresh())->toBeNull();
+});
+
+it('admin cannot delete their own account', function () {
+    $admin = userWithRole(User::ROL_ADMINISTRADOR);
+    userWithRole(User::ROL_ADMINISTRADOR);
+
+    $this->actingAs($admin)
+        ->delete("/usuarios/{$admin->id}")
+        ->assertRedirect();
+
+    expect($admin->fresh())->not->toBeNull();
+});
+
+it('does not seed demo users in production', function () {
+    app()->instance('env', 'production');
+
+    try {
+        (new UsuariosSeeder)->run();
+
+        expect(User::query()->count())->toBe(0);
+    } finally {
+        app()->instance('env', 'testing');
+    }
 });
 
 it('cajera cannot create user', function () {

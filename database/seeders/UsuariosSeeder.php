@@ -9,6 +9,10 @@ class UsuariosSeeder extends Seeder
 {
     public function run(): void
     {
+        if (app()->isProduction()) {
+            return;
+        }
+
         $users = [
             ['name' => 'Admin', 'email' => 'admin@isinuta.test', 'password' => bcrypt('admin1234'), 'id_rol' => User::ROL_ADMINISTRADOR],
             ['name' => 'Cajera', 'email' => 'cajera@isinuta.test', 'password' => bcrypt('cajera1234'), 'id_rol' => User::ROL_CAJERA],

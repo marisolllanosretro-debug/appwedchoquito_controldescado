@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Head, Link } from '@inertiajs/vue3';
-import { login } from '@/routes';
+import { catalogo, dashboard, login } from '@/routes';
 
 withDefaults(
     defineProps<{
@@ -35,18 +35,25 @@ withDefaults(
                     <a href="#contacto" class="text-sm text-gray-400 transition-colors hover:text-amber-400">Contacto</a>
                         <Link
                             v-if="$page.props.auth.user"
-                            href="/dashboard"
+                            :href="dashboard()"
                             class="rounded-lg bg-gradient-to-r from-amber-500 to-orange-600 px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-amber-500/30 transition-all hover:scale-105 hover:from-amber-600 hover:to-orange-700"
                         >
                             Dashboard
                         </Link>
-                        <Link
-                            v-else
-                            :href="login()"
-                            class="rounded-lg bg-gradient-to-r from-amber-500 to-orange-600 px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-amber-500/30 transition-all hover:scale-105 hover:from-amber-600 hover:to-orange-700"
-                        >
-                            Iniciar Sesión
-                        </Link>
+                        <template v-else>
+                            <Link
+                                :href="catalogo()"
+                                class="rounded-lg border border-amber-500/40 px-5 py-2 text-sm font-semibold text-amber-300 transition-all hover:border-amber-400 hover:bg-amber-500/10"
+                            >
+                                Entrar como cliente
+                            </Link>
+                            <Link
+                                :href="login()"
+                                class="rounded-lg bg-gradient-to-r from-amber-500 to-orange-600 px-5 py-2 text-sm font-semibold text-white shadow-lg shadow-amber-500/30 transition-all hover:scale-105 hover:from-amber-600 hover:to-orange-700"
+                            >
+                                Iniciar Sesión
+                            </Link>
+                        </template>
                 </nav>
             </div>
         </header>
@@ -78,14 +85,14 @@ withDefaults(
                             <div class="flex flex-wrap gap-4">
                                 <Link
                                     v-if="!$page.props.auth.user"
-                                    :href="login()"
+                                    :href="catalogo()"
                                     class="rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 px-8 py-4 font-bold shadow-xl shadow-amber-500/30 transition-all hover:scale-105 hover:from-amber-600 hover:to-orange-700"
                                 >
                                     Ver Menú
                                 </Link>
                                 <Link
                                     v-else
-                                    href="/dashboard"
+                                    :href="dashboard()"
                                     class="rounded-xl bg-gradient-to-r from-amber-500 to-orange-600 px-8 py-4 font-bold shadow-xl shadow-amber-500/30 transition-all hover:scale-105 hover:from-amber-600 hover:to-orange-700"
                                 >
                                     Ir al Panel
@@ -130,7 +137,7 @@ withDefaults(
                                         <img src="https://images.unsplash.com/photo-1509440159596-0249088772ff?w=400&q=80" alt="Pan francés" class="h-64 w-full object-cover transition-transform duration-700 hover:scale-110" />
                                     </div>
                                     <div class="overflow-hidden rounded-2xl">
-                                        <img src="https://images.unsplash.com/photo-1551103782-8ab07afd45c1?w=400&q=80" alt="Pastelería" class="h-48 w-full object-cover transition-transform duration-700 hover:scale-110" />
+                                        <img src="/images/landing/reposteria-artesanal.png" alt="Croissants, rollos de canela, tartaletas y pastel de chocolate" class="h-48 w-full object-cover transition-transform duration-700 hover:scale-110" />
                                     </div>
                                 </div>
                             </div>

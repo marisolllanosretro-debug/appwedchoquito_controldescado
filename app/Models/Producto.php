@@ -43,6 +43,11 @@ class Producto extends Model
         return $this->hasMany(Compra::class, 'id_producto');
     }
 
+    public function pedidoDetalles(): HasMany
+    {
+        return $this->hasMany(PedidoDetalle::class);
+    }
+
     public function getStockBajoAttribute(): bool
     {
         return $this->stock <= $this->stock_minimo;

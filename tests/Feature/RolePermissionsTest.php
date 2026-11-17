@@ -2,6 +2,7 @@
 
 use App\Models\User;
 use Database\Seeders\RolesSeeder;
+use Illuminate\Support\Facades\Route;
 
 beforeEach(fn () => $this->seed(RolesSeeder::class));
 
@@ -75,6 +76,29 @@ it('admin can create compras', function () {
             'estado' => 'pendiente',
         ])
         ->assertRedirect();
+});
+
+it('admin has full access even if role permissions are incomplete', function () {
+    Route::get('/test/admin-full-access', fn () => 'ok')
+        ->middleware(['web', 'auth', 'permiso:gestionar_productos']);
+
+    $admin = userWithRole(User::ROL_ADMINISTRADOR);
+    $admin->rol()->update(['permisos' => []]);
+
+    $this->actingAs($admin)
+        ->get('/test/admin-full-access')
+        ->assertOk();
+});
+
+it('unknown permissions are denied by default', function () {
+    Route::get('/test/unknown-permission', fn () => 'ok')
+        ->middleware(['web', 'auth', 'permiso:gestionar_desconocido']);
+
+    $admin = userWithRole(User::ROL_ADMINISTRADOR);
+
+    $this->actingAs($admin)
+        ->get('/test/unknown-permission')
+        ->assertForbidden();
 });
 
 it('cajera can create compras', function () {
